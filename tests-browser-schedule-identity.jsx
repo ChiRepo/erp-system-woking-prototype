@@ -1,0 +1,78 @@
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
+import { MemoryRouter } from 'react-router-dom';
+import { AuthContext } from './src/contexts/authSession.js';
+import { ThemeProvider } from './src/contexts/ThemeContext.jsx';
+import FacultyDashboard from './src/pages/faculty/Dashboard.jsx';
+import FacultyClasses from './src/pages/faculty/Classes.jsx';
+import FacultyAttendance from './src/pages/faculty/Attendance.jsx';
+import FacultyGrades from './src/pages/faculty/Grades.jsx';
+import StudentTimetable from './src/pages/student/Timetable.jsx';
+import { facultyScheduleId, studentScheduleCohort, liveTimelineCursor } from './src/utils/scheduleIdentity.js';
+import { timetableService } from './src/services/timetableService.js';
+import { classroomAttendanceRepository } from './src/services/classroomAttendanceRepository.js';
+import { firestoreService } from './src/services/firestoreService.js';
+const settle=()=>new Promise(resolve=>setTimeout(resolve,40));
+export async function runScheduleIdentityChecks(check) {
+ const node=document.createElement('div'); node.hidden=true; document.body.append(node);
+ const root=createRoot(node);
+ const user={uid:'fixture-new-faculty',id:'FAC-NEW',email:'sneha-test@krc.edu',name:'New Faculty',displayName:'New Faculty',role:'faculty'};
+ const originalSessions=classroomAttendanceRepository.subscribeSessions;
+ classroomAttendanceRepository.subscribeSessions=(_uid,_admin,next)=>{next([]);return()=>{};};
+ const originals={getStudentGrades:firestoreService.getStudentGrades,getAuditLog:firestoreService.getAuditLog,subscribeAuditLog:firestoreService.subscribeAuditLog,saveStudentGrade:firestoreService.saveStudentGrade};
+ let auditReads=0,gradeWrites=0;
+ const savedRoster=localStorage.getItem('krc_students');
+ firestoreService.getStudentGrades=async()=>[];
+ firestoreService.getAuditLog=async()=>{auditReads++;return [];};
+ firestoreService.subscribeAuditLog=()=>{auditReads++;return ()=>{};};
+ firestoreService.saveStudentGrade=async()=>{gradeWrites++;return true;};
+ const render=async(Component,account=user)=>{flushSync(()=>root.render(<AuthContext.Provider value={{user:account,role:account.role}}><MemoryRouter><ThemeProvider><Component key={Component.name+account.uid}/></ThemeProvider></MemoryRouter></AuthContext.Provider>));await settle();};
+ try {
+  const late=liveTimelineCursor(new Date(2026,9,15,23,30));
+  const early=liveTimelineCursor(new Date(2026,9,15,6,30));
+  check('A live timeline after20:00 stays on the actual day with its actual clock',late.dayIndex===3&&late.minute===1410&&Math.floor(late.position/720)===3);
+  check('A live timeline before08:00 stays on the actual day without borrowing an earlier class',early.dayIndex===3&&early.minute===390&&Math.floor(early.position/720)===3);
+  check('A faculty email substring cannot substitute for its enrolled ID',facultyScheduleId(user)==='FAC-NEW');
+  check('A missing faculty enrollment has no default FAC-101 identity',facultyScheduleId(null)==='');
+  check('The actual session UID is retained when no faculty employee ID exists',facultyScheduleId({uid:'actual-session'})==='actual-session');
+  check('Unassigned faculty receives no weekly or daily foreign lectures',timetableService.getFacultyLectures(facultyScheduleId(user)).length===0 && timetableService.getFacultyLectures('FAC-NEW','Monday').length===0);
+  const assigned=timetableService.getFacultyLectures('FAC-101','Monday');
+  check('Assigned faculty retains its own scheduled lectures',assigned.length>0 && assigned.every(l=>l.facultyId==='FAC-101'&&l.day==='Monday'));
+  check('An absent student cohort remains absent instead of borrowing CSE',studentScheduleCohort({}).dept==='' && timetableService.getStudentLectures('','').length===0);
+  check('A student cohort query cannot mix departments or semesters',timetableService.getStudentLectures('CSE','Sem V').every(l=>l.dept==='CSE'&&l.sem==='Sem V') && timetableService.getStudentLectures('ECE','Sem I').length===0);
+  await render(FacultyDashboard);
+  check('The actual new faculty dashboard contains no borrowed timetable or attendance percentage',node.textContent.includes('No lectures scheduled for you today.')&&!node.textContent.includes('92.4%')&&!node.textContent.includes('Deep Learning Model Training'));
+  await render(FacultyClasses);
+  check('The actual faculty classes page shows an unassigned state',node.textContent.includes('No lectures assigned to you'));
+  await render(FacultyClasses,{...user,uid:'fixture-assigned',id:'FAC-101'});
+  const dayButton=[...node.querySelectorAll('button')].find(b=>b.textContent==='Monday');
+  flushSync(()=>dayButton.click());await settle();
+  check('The actual assigned faculty classes page keeps its own Monday course',node.textContent.includes('Operating Systems & Distributed Architecture'));
+  await render(FacultyAttendance);
+  check('An unassigned faculty has no active QR generator or foreign faculty name',node.textContent.includes('QR attendance is unavailable.')&&!node.textContent.includes('Dr. Arvind Joshi')&&!node.querySelector('canvas'));
+  check('An unassigned attendance page makes zero central audit reads or subscriptions',auditReads===0);
+  await render(FacultyGrades);
+  const save=[...node.querySelectorAll('button')].find(b=>b.textContent.includes('Save Grades'));
+  check('An unassigned faculty cannot edit or save foreign student grades',save?.disabled && !node.querySelector('input[type=number]') && node.textContent.includes('No courses assigned'));
+  check('Opening an unassigned grade page performs no grade writes',gradeWrites===0);
+  localStorage.setItem('krc_students',JSON.stringify([{uid:'fixture-grade-student',name:'Enrolled Student',prn:'FIXTURE-ONLY',dept:'CSE',sem:'Sem V'}]));
+  await render(FacultyGrades,{...user,uid:'fixture-grade-faculty',id:'FAC-101'});
+  check('An assigned grade form leaves missing marks unrecorded instead of seeding25/A',node.textContent.includes('Not recorded')&&[...node.querySelectorAll('input[type=number]')].every(input=>input.value===''));
+  const inputs=[...node.querySelectorAll('input[type=number]')];
+  const inputValue=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+  flushSync(()=>inputs.forEach(input=>{inputValue.call(input,'24');input.dispatchEvent(new Event('input',{bubbles:true}));}));await settle();
+  firestoreService.saveStudentGrade=async()=>{gradeWrites++;return false;};
+  const assignedSave=[...node.querySelectorAll('button')].find(b=>b.textContent.includes('Save Grades'));
+  flushSync(()=>assignedSave.click());await settle();
+  check('A rejected grade write never acknowledges Scores Saved',gradeWrites===1&&node.querySelector('[role=alert]')?.textContent.includes('not saved')&&!node.textContent.includes('Scores Saved'));
+  await render(StudentTimetable,{uid:'fixture-ece',name:'ECE Student',dept:'ECE',sem:'Sem V',role:'student'});
+  check('The actual ECE continuous timeline cannot display default CSE lectures',!node.textContent.includes('CS-501')&&!node.textContent.includes('Advanced Database'));
+  const daily=[...node.querySelectorAll('button')].find(b=>b.textContent.toLowerCase().includes('daily'));
+  if(daily){flushSync(()=>daily.click());await settle();}
+  check('The actual ECE daily timetable cannot display default CSE lectures',Boolean(daily)&&!node.textContent.includes('CS-501')&&!node.textContent.includes('Advanced Database'));
+ } finally {
+  flushSync(()=>root.unmount());node.remove();Object.assign(firestoreService,originals);classroomAttendanceRepository.subscribeSessions=originalSessions;
+  if(savedRoster===null)localStorage.removeItem('krc_students');else localStorage.setItem('krc_students',savedRoster);
+ }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "krc-erp-media-local-fixtures",
+  "main": "worker.fixtures.js",
+  "compatibility_date": "2026-10-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "send_metrics": false,
+  "vars": {
+    "ENVIRONMENT": "local-fixtures"
+  },
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8789
+  },
+  "observability": {
+    "enabled": false
+  },
+  "alias": {
+    "@aws-sdk/xml-builder": "./node_modules/@aws-sdk/xml-builder/dist-cjs/index.js"
+  }
+}

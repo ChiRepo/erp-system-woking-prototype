@@ -1,0 +1,580 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // KRC INSTITUTE OF TECHNOLOGY - FIRESTORE DATA ABSTRACTION & SECURITY RULES
+    // =========================================================================
+    // Architecture: User-Scoped Folders & Subcollections
+    // - Each user has an isolated folder path: /users/{userId}/...
+    // - Attendance history is written to the student's personal folder and a global immutable ledger.
+    // - Tamper-proof: Records cannot be deleted or overwritten by students or faculty.
+    // =========================================================================
+
+    // Authentication & Role Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Role extraction from user profile document
+    function getUserRole() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) ?
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'guest') : 'guest';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email != null && (
+        (request.auth.token.email.lower() == 'chinmayc3003@gmail.com' &&
+          request.auth.token.email_verified == true &&
+          request.auth.token.firebase.sign_in_provider == 'google.com') ||
+        (request.auth.token.email.lower() == 'admin@krc.edu' &&
+          request.auth.token.firebase.sign_in_provider == 'password')
+      );
+    }
+
+    function isFaculty() {
+      return isSignedIn() && getUserRole() == 'faculty' &&
+        matchesEnrollmentProvider(get(/databases/$(database)/documents/users/$(request.auth.uid)).data);
+    }
+
+    function isStudent() {
+      return isSignedIn() && getUserRole() in ['student', 'Student'] &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('prn', '') != '' &&
+        matchesEnrollmentProvider(get(/databases/$(database)/documents/users/$(request.auth.uid)).data);
+    }
+
+    function matchesEnrollmentProvider(enrollment) {
+      let email = request.auth.token.get('email', '').lower();
+      let provider = request.auth.token.firebase.sign_in_provider;
+      return email != '' && (
+        (provider == 'password' && email == enrollment.get('email', '').lower()) ||
+        (provider == 'google.com' && request.auth.token.get('email_verified', false) == true && (
+          email == enrollment.get('email', '').lower() || email == enrollment.get('googleEmail', '').lower()
+        ))
+      );
+    }
+
+    function canUseChat() {
+      return isStudent() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('allowChatting', true) != false;
+    }
+
+    // Aliases are written by the administrator during enrollment, never by students.
+    function emailEnrollment() {
+      let email = request.auth.token.email.lower();
+      return request.auth.token.firebase.sign_in_provider == 'google.com' &&
+        exists(/databases/$(database)/documents/users/$("google_" + email))
+        ? get(/databases/$(database)/documents/users/$("google_" + email)).data
+        : (exists(/databases/$(database)/documents/users/$(email))
+          ? get(/databases/$(database)/documents/users/$(email)).data
+          : {});
+    }
+
+    function canInitializeEnrollment() {
+      let enrollment = emailEnrollment();
+      return enrollment.get('role', 'guest') in ['student', 'faculty'] &&
+        matchesEnrollmentProvider(enrollment) &&
+        request.resource.data.get('uid', '') == request.auth.uid &&
+        request.resource.data.get('authUid', request.auth.uid) == request.auth.uid &&
+        request.resource.data.role == enrollment.role &&
+        request.resource.data.get('prn', '') == enrollment.get('prn', '') &&
+        request.resource.data.get('id', '') == enrollment.get('id', '') &&
+        request.resource.data.get('employeeId', '') == enrollment.get('employeeId', '') &&
+        request.resource.data.get('dept', '') == enrollment.get('dept', '') &&
+        request.resource.data.get('sem', '') == enrollment.get('sem', '') &&
+        request.resource.data.get('allowChatting', false) == enrollment.get('allowChatting', false) &&
+        request.resource.data.get('email', '') == enrollment.get('email', '') &&
+        request.resource.data.get('googleEmail', '') == enrollment.get('googleEmail', '') &&
+        request.resource.data.get('academicSummary', {}) == enrollment.get('academicSummary', {}) &&
+        request.resource.data.get('feeSummary', {}) == enrollment.get('feeSummary', {}) &&
+        request.resource.data.get('enrolledCourses', []) == enrollment.get('enrolledCourses', []);
+    }
+
+    function validSessionDefinition(data) {
+      return data.keys().hasAll(['facultyUid','facultyName','courseId','courseName','room','dept','sem','startAt','endAt','active','nonce','tokenIssuedAt','createdBy','createdAt']) &&
+        data.keys().hasOnly(['facultyUid','facultyName','courseId','courseName','room','dept','sem','startAt','endAt','active','nonce','tokenIssuedAt','createdBy','createdAt']) &&
+        data.facultyUid is string && data.facultyUid.matches('^[^/]{1,128}$') &&
+        data.courseId is string && data.courseId.matches('^[^/]{1,128}$') &&
+        data.facultyName is string && data.facultyName.size() > 0 && data.facultyName.size() <= 256 &&
+        data.courseName is string && data.courseName.size() > 0 && data.courseName.size() <= 256 &&
+        data.room is string && data.room.size() > 0 && data.room.size() <= 256 &&
+        data.dept is string && data.dept.size() > 0 && data.sem is string && data.sem.size() > 0 &&
+        data.startAt is timestamp && data.endAt is timestamp && data.endAt > data.startAt &&
+        data.endAt <= data.startAt + duration.value(8,'h') && data.active is bool;
+    }
+
+    function validClassroomAttendance(userId, attendanceId, entry) {
+      let profile = get(/databases/$(database)/documents/users/$(userId)).data;
+      let sessionId = entry.get('sessionId','__missing__');
+      let sessionPath = /databases/$(database)/documents/attendance_sessions/$(sessionId);
+      let session = get(sessionPath).data;
+      return isOwner(userId) && isStudent() && exists(sessionPath) &&
+        entry.keys().hasAll(['attendanceId','sessionId','nonce','studentUid','studentName','prn','dept','sem','courseId','courseName','facultyUid','faculty','lectureHall','status','verified','verificationMethod','timestamp']) &&
+        entry.keys().hasOnly(['attendanceId','sessionId','nonce','studentUid','studentName','prn','dept','sem','courseId','courseName','facultyUid','faculty','lectureHall','status','verified','verificationMethod','timestamp']) &&
+        attendanceId == sessionId + '_' + request.auth.uid && entry.attendanceId == attendanceId &&
+        entry.studentUid == userId && entry.studentName == profile.name && entry.prn == profile.prn &&
+        entry.dept == profile.dept && entry.sem == profile.sem && entry.dept == session.dept && entry.sem == session.sem &&
+        entry.courseId == session.courseId && entry.courseName == session.courseName && entry.facultyUid == session.facultyUid &&
+        entry.faculty == session.facultyName && entry.lectureHall == session.room &&
+        entry.status == 'Present' && entry.verified == true && entry.verificationMethod == 'Live classroom QR' &&
+        entry.timestamp == request.time && session.active == true &&
+        request.time >= session.startAt && request.time < session.endAt &&
+        session.tokenIssuedAt is timestamp && request.time >= session.tokenIssuedAt &&
+        request.time < session.tokenIssuedAt + duration.value(45,'s') &&
+        session.nonce is string && session.nonce.matches('^[A-Za-z0-9_-]{43}$') && entry.nonce == session.nonce;
+    }
+
+    function validAdministrativeAttendance(userId, attendanceId, entry) {
+      return isAdmin() && entry.keys().hasAll(['attendanceId','studentUid','courseId','status','timestamp','verificationMethod','recordedBy']) &&
+        entry.attendanceId == attendanceId && entry.studentUid == userId && entry.timestamp == request.time &&
+        entry.recordedBy == request.auth.uid && entry.verificationMethod == 'Administrative entry';
+    }
+
+    match /attendance_sessions/{sessionId} {
+      allow read: if isAdmin() || (isFaculty() && resource.data.facultyUid == request.auth.uid);
+      allow create: if isAdmin() && validSessionDefinition(request.resource.data) &&
+        get(/databases/$(database)/documents/users/$(request.resource.data.facultyUid)).data.get('role','guest') == 'faculty' &&
+        request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time &&
+        request.resource.data.nonce == '' && request.resource.data.tokenIssuedAt == null;
+      allow update: if (isAdmin() && validSessionDefinition(request.resource.data) &&
+          request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt) ||
+        (isFaculty() && resource.data.facultyUid == request.auth.uid && resource.data.active == true &&
+          request.time >= resource.data.startAt && request.time < resource.data.endAt &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nonce','tokenIssuedAt']) &&
+          request.resource.data.nonce is string && request.resource.data.nonce.matches('^[A-Za-z0-9_-]{43}$') &&
+          request.resource.data.nonce != resource.data.nonce && request.resource.data.tokenIssuedAt == request.time);
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 1. ROOT USER PROFILES: /users/{userId}
+    // =========================================================================
+    match /users/{userId} {
+      // Students and faculty can view their own profile; faculty/admins can view all profiles;
+      // Peer discovery uses student_directory; private enrollment records stay private.
+      // Authenticated users can read documents matching their Google or institutional email
+      allow read: if isOwner(userId) || isFaculty() || isAdmin() || 
+        (isSignedIn() && request.auth.token.email != null && (
+          resource.data.googleEmail == request.auth.token.email || 
+          resource.data.googleEmail == request.auth.token.email.lower() ||
+          resource.data.email == request.auth.token.email ||
+          resource.data.email == request.auth.token.email.lower() ||
+          userId == ('google_' + request.auth.token.email) ||
+          userId == ('google_' + request.auth.token.email.lower()) ||
+          userId == request.auth.token.email ||
+          userId == request.auth.token.email.lower()
+        ));
+      
+      allow create: if isAdmin() || (isOwner(userId) && (
+        request.resource.data.get('role', 'guest') == 'guest' ||
+        (request.auth.token.email != null && canInitializeEnrollment())
+      ));
+      allow delete: if isAdmin();
+      // Owners edit appearance; enrollment, role and clearance remain admin controlled.
+      allow update: if isAdmin() || (isOwner(userId) && (
+        (resource.data.get('role', 'guest') == 'guest' && request.auth.token.email != null && canInitializeEnrollment()) ||
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'role', 'prn', 'employeeId', 'id', 'uid', 'authUid', 'email', 'googleEmail',
+          'googleEmailVerified', 'isGoogleLinked', 'allowChatting', 'chatAccessKey', 'dept', 'sem',
+          'academicSummary', 'feeSummary', 'enrolledCourses'
+        ])
+      ));
+
+      // =======================================================================
+      // 2. USER FOLDER: ATTENDANCE HISTORY (Student-Scoped Subcollection)
+      // Path: /users/{userId}/attendance_history/{attendanceId}
+      // =======================================================================
+      match /attendance_history/{attendanceId} {
+        // Students can inspect their personal historical records anytime.
+        // Faculty teaching the course and College Admins can audit this student's records.
+        allow read: if isOwner(userId) || isFaculty() || isAdmin();
+
+        // The private receipt and central audit entry must be equal in this atomic commit.
+        allow create: if (validClassroomAttendance(userId, attendanceId, request.resource.data) ||
+            validAdministrativeAttendance(userId, attendanceId, request.resource.data)) &&
+          getAfter(/databases/$(database)/documents/attendance_audit_log/$(attendanceId)).data == request.resource.data;
+
+        // CRITICAL CONFLICT-RESOLUTION RULE: IMMUTABILITY
+        // Once attendance is logged, neither the student nor the professor can alter or delete it.
+        // This guarantees that "sir/mam hasn't given attendance" claims can be definitively verified.
+        allow update, delete: if isAdmin();
+      }
+
+      // =======================================================================
+      // 3. USER FOLDER: ACADEMIC MARKS & GRADES (Student-Scoped Subcollection)
+      // Path: /users/{userId}/grades/{gradeId}
+      // =======================================================================
+      match /grades/{gradeId} {
+        allow read: if isOwner(userId) || isFaculty() || isAdmin();
+        allow write: if isFaculty() || isAdmin();
+      }
+
+      // =======================================================================
+      match /fee_receipts/{receiptId} {
+        // Read strictly restricted to student owner and college admin (no leakout)
+        allow read: if isOwner(userId) || isAdmin();
+        // Receipts are entered by accounting administrators or a trusted verified-payment backend.
+        allow create: if isAdmin();
+        // Immutability: only admin has authority to modify or delete financial records
+        allow update, delete: if isAdmin();
+      }
+
+      // =======================================================================
+      // 5. USER FOLDER: FACULTY SESSIONS (Faculty-Scoped Subcollection)
+      // Path: /users/{userId}/qr_sessions/{sessionId}
+      // =======================================================================
+      match /qr_sessions/{sessionId} {
+        allow read, write: if (isOwner(userId) && isFaculty()) || isAdmin();
+      }
+
+      // =======================================================================
+      // 5B. USER FOLDER: ENCRYPTED GROUP KEYS & USER MESSAGE COPIES
+      // Path: /users/{userId}/groups/{groupId}
+      // Subpath: /users/{userId}/groups/{groupId}/keys/{keyId}
+      // Subpath: /users/{userId}/groups/{groupId}/messages/{messageId}
+      // =======================================================================
+      match /groups/{groupId} {
+        allow read, write, delete: if isOwner(userId) || isAdmin();
+
+        match /keys/{keyId} {
+          allow read: if isOwner(userId) || isAdmin();
+          // A student may manage their own access keys but never remove or forge a ban record
+          allow write: if isAdmin() || (isOwner(userId) && keyId != 'group_banned_key');
+        }
+
+        match /messages/{messageId} {
+          allow read, write, delete: if isOwner(userId) || isAdmin();
+        }
+      }
+
+      // =======================================================================
+      // 5C. USER FOLDER: DEDICATED STUDENT METADATA & DATA FOLDERS
+      // Path: /users/{userId}/folder/{docId}
+      // Subpaths: profile, academic, fees, security, storage
+      // =======================================================================
+      match /folder/{docId} {
+        allow read: if isOwner(userId) || isFaculty() || isAdmin();
+        allow write, delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /academic/{docId} {
+        allow read: if isOwner(userId) || isFaculty() || isAdmin();
+        // Published summaries are administrative records, never self-authored.
+        allow write, delete: if isAdmin() || (isOwner(userId) && docId != 'summary');
+      }
+
+      match /fee_summary/{summaryId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isAdmin();
+      }
+
+      match /chats/{chatId} {
+        allow read, write, delete: if isOwner(userId) || isAdmin();
+        match /{allChildren=**} {
+          allow read, write, delete: if isOwner(userId) || isAdmin();
+        }
+      }
+      match /chat_preferences/{chatId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId) && canUseChat() &&
+          request.resource.data.keys().hasOnly(['closed', 'closedAt', 'lastViewedAt']) &&
+          request.auth.uid in get(/databases/$(database)/documents/student_chats/$(chatId)).data.participants;
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // =========================================================================
+    // 6. GLOBAL CENTRAL ATTENDANCE AUDIT LOG (Immutable College Ledger)
+    // Path: /attendance_audit_log/{auditId}
+    // =========================================================================
+    match /attendance_audit_log/{auditId} {
+      // Read access allowed for college administration and faculty auditing
+      allow read: if isFaculty() || isAdmin();
+
+      // No orphan, spoofed or client-only attendance acknowledgments.
+      allow create: if request.resource.data.get('studentUid','') is string &&
+        (validClassroomAttendance(request.resource.data.studentUid, auditId, request.resource.data) ||
+          validAdministrativeAttendance(request.resource.data.studentUid, auditId, request.resource.data)) &&
+        getAfter(/databases/$(database)/documents/users/$(request.resource.data.studentUid)/attendance_history/$(auditId)).data == request.resource.data;
+
+      // Never allow updates or deletions to preserve legal and academic audit integrity
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 7. PUBLIC & ACADEMIC CATALOGUES
+    // =========================================================================
+    match /courses/{courseId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isFaculty();
+    }
+
+    match /timetable/{scheduleId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() || isFaculty();
+    }
+
+    match /college_analytics/{metricId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 8. SECURITY AUDIT & ENCRYPTED CREDENTIAL VAULT
+    // Path: /security_audit/{docId}
+    // =========================================================================
+    // Legacy credential documents are server-only, including for administrators.
+    match /security_audit/{docId} {
+      allow read, write: if false;
+    }
+    match /system_secure_vault/{docId} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // 9. STUDENT-ONLY PRIVATE CHATS & MESSAGES (FACULTY STRICTLY BANNED)
+    // Path: /student_chats/{chatId}
+    // =========================================================================
+    function validMessageRetraction() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return before.get('deletedForEveryone', false) == false &&
+        after.keys().hasOnly(['from', 'fromName', 'timestamp', 'type', 'text', 'deletedForEveryone', 'deletedBy', 'deletedAt']) &&
+        after.from == before.from && after.fromName == before.get('fromName', '') && after.timestamp == before.timestamp &&
+        after.type == 'deleted' && after.text == '' && after.deletedForEveryone == true &&
+        after.deletedBy == request.auth.uid && after.deletedAt == request.time;
+    }
+    match /student_chats/{chatId} {
+      allow get: if canUseChat() && !exists(/databases/$(database)/documents/student_chats/$(chatId));
+      allow read: if isAdmin() || (canUseChat() && (request.auth.uid in resource.data.participants));
+      allow create: if canUseChat() && request.auth.uid in request.resource.data.participants;
+      allow update: if isAdmin() || (canUseChat() && request.auth.uid in resource.data.participants &&
+        request.resource.data.participants == resource.data.participants);
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAdmin() || (canUseChat() && request.auth.uid in get(/databases/$(database)/documents/student_chats/$(chatId)).data.participants);
+        allow create: if canUseChat() && request.resource.data.from == request.auth.uid &&
+          !request.resource.data.keys().hasAny(['deletedForEveryone', 'deletedBy', 'deletedAt']) &&
+          request.auth.uid in get(/databases/$(database)/documents/student_chats/$(chatId)).data.participants;
+        allow update: if validMessageRetraction() && (isAdmin() || (canUseChat() && resource.data.from == request.auth.uid &&
+          request.auth.uid in get(/databases/$(database)/documents/student_chats/$(chatId)).data.participants));
+        allow delete: if false;
+      }
+    }
+
+    // =========================================================================
+    // 9B. STUDENT COMMUNITY CHANNELS & STUDY GROUPS
+    // Path: /student_channels/{channelId}
+    // =========================================================================
+    function channelCreator(data) { return data.get('creatorUid', data.get('createdBy', '')); }
+    function channelManager(data) {
+      return canUseChat() && (channelCreator(data) == request.auth.uid ||
+        (request.auth.uid in data.get('memberUids', []) && request.auth.uid in data.get('adminUids', [])));
+    }
+    function channelMember(data) {
+      return canUseChat() && !(request.auth.uid in data.get('bannedMembers', [])) &&
+        (channelCreator(data) == request.auth.uid || request.auth.uid in data.get('memberUids', []));
+    }
+    function validChannelMembership(data) {
+      return data.memberUids is list && data.adminUids is list && data.members is list &&
+        data.memberUids.size() == data.memberUids.toSet().size() && data.members.size() >= data.memberUids.size() &&
+        data.memberUids.hasAll(data.adminUids) && channelCreator(data) in data.memberUids &&
+        channelCreator(data) in data.adminUids && data.membersCount == data.memberUids.size();
+    }
+    function validChannelInvite(token, channelId) {
+      let invite = get(/databases/$(database)/documents/student_channel_invites/$(token)).data;
+      return invite.channelId == channelId && invite.expiresAt > request.time.toMillis();
+    }
+    function validJoinProof(channelId) {
+      let proof = getAfter(/databases/$(database)/documents/student_channels/$(channelId)/join_requests/$(request.auth.uid)).data;
+      return validChannelInvite(proof.token, channelId);
+    }
+    function selfJoinChannel(channelId) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let joining = after.members[after.members.size() - 1];
+      return canUseChat() && !(request.auth.uid in before.memberUids) &&
+        !(request.auth.uid in before.get('bannedMembers', [])) &&
+        !(get(/databases/$(database)/documents/users/$(request.auth.uid)).data.prn in before.get('bannedMembers', [])) &&
+        after.diff(before).affectedKeys().hasOnly(['members', 'memberUids', 'membersCount', 'updatedAt']) &&
+        after.memberUids.size() == before.memberUids.size() + 1 && after.memberUids.hasAll(before.memberUids) &&
+        request.auth.uid in after.memberUids && after.members.size() == before.members.size() + 1 &&
+        after.members.hasAll(before.members) && joining.uid == request.auth.uid &&
+        joining.get('isAdmin', false) == false && joining.get('isCreator', false) == false &&
+        joining.get('permanentAdmin', false) == false && validJoinProof(channelId);
+    }
+    function selfLeaveChannel() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return channelMember(before) && request.auth.uid != channelCreator(before) &&
+        after.diff(before).affectedKeys().hasOnly(['memberUids', 'adminUids', 'membersCount', 'updatedAt']) &&
+        after.memberUids.toSet() == before.memberUids.toSet().difference([request.auth.uid].toSet()) &&
+        after.adminUids.toSet() == before.adminUids.toSet().difference([request.auth.uid].toSet());
+    }
+    match /student_channels/{channelId} {
+      allow read: if canUseChat() || isAdmin();
+      allow create: if canUseChat() && request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.creatorUid == request.auth.uid && request.resource.data.memberUids == [request.auth.uid] &&
+        request.resource.data.adminUids == [request.auth.uid] && request.resource.data.members.size() == 1 &&
+        request.resource.data.members[0].uid == request.auth.uid && validChannelMembership(request.resource.data);
+      allow update: if isAdmin() || (canUseChat() &&
+        request.resource.data.get('createdBy', '') == resource.data.get('createdBy', '') &&
+        request.resource.data.get('creatorUid', '') == resource.data.get('creatorUid', '') &&
+        request.resource.data.createdAt == resource.data.createdAt && (
+          (channelManager(resource.data) && validChannelMembership(request.resource.data)) ||
+          (channelMember(resource.data) && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'lastMessage', 'lastTimestamp', 'lastSender', 'lastMentions', 'lastMessageId'
+          ]) && request.resource.data.lastSender == request.auth.uid) ||
+          (validChannelMembership(request.resource.data) && (selfJoinChannel(channelId) || selfLeaveChannel()))
+        ));
+      allow delete: if isAdmin();
+      match /messages/{messageId} {
+        allow read: if channelMember(get(/databases/$(database)/documents/student_channels/$(channelId)).data) || isAdmin();
+        allow create: if channelMember(get(/databases/$(database)/documents/student_channels/$(channelId)).data) &&
+          !request.resource.data.keys().hasAny(['deletedForEveryone', 'deletedBy', 'deletedAt']) &&
+          request.resource.data.from == request.auth.uid;
+        allow update: if validMessageRetraction() && (isAdmin() ||
+          (channelMember(get(/databases/$(database)/documents/student_channels/$(channelId)).data) &&
+            (resource.data.from == request.auth.uid || channelManager(get(/databases/$(database)/documents/student_channels/$(channelId)).data))));
+        allow delete: if false;
+      }
+      match /join_requests/{studentUid} {
+        allow read: if isOwner(studentUid) || channelManager(get(/databases/$(database)/documents/student_channels/$(channelId)).data);
+        allow create, update: if canUseChat() && isOwner(studentUid) &&
+          request.resource.data.keys().hasOnly(['token', 'uid', 'createdAt']) && request.resource.data.uid == request.auth.uid &&
+          validChannelInvite(request.resource.data.token, channelId);
+      }
+    }
+    match /student_channel_invites/{token} {
+      allow get: if canUseChat();
+      allow create: if canUseChat() && request.resource.data.keys().hasOnly(['channelId', 'channelName', 'createdBy', 'createdAt', 'expiresAt']) &&
+        request.resource.data.createdBy == request.auth.uid && request.resource.data.expiresAt > request.time.toMillis() &&
+        request.resource.data.expiresAt <= request.time.toMillis() + 604860000 &&
+        channelManager(get(/databases/$(database)/documents/student_channels/$(request.resource.data.channelId)).data);
+      allow delete: if channelManager(get(/databases/$(database)/documents/student_channels/$(resource.data.channelId)).data) || isAdmin();
+    }
+
+    // =========================================================================
+    // 10. STUDENT SOCIAL PROFILES (CAMPUS PUBLIC VISIBILITY)
+    // Path: /student_social_profiles/{userId}
+    // =========================================================================
+    match /student_social_profiles/{userId} {
+      allow read: if isStudent() || isAdmin();
+      allow write: if (isOwner(userId) && isStudent()) || isAdmin();
+    }
+
+    function validDirectoryProjection(userId, data) {
+      let profile = getAfter(/databases/$(database)/documents/users/$(userId)).data;
+      return data.keys().hasAll(['uid','role','name','displayName','fullName','prn','email','googleEmail','dept','sem','allowChatting','photoURL','roll','username','updatedAt']) &&
+        data.keys().hasOnly(['uid','role','name','displayName','fullName','prn','email','googleEmail','dept','sem','allowChatting','photoURL','roll','username','updatedAt']) &&
+        data.uid == userId && profile.uid == userId && data.role == 'student' && profile.role in ['student','Student'] &&
+        data.name == profile.get('name',profile.get('displayName',profile.get('fullName',''))) && data.name is string && data.name.size() > 0 &&
+        data.displayName == data.name && data.fullName == data.name && data.prn == profile.prn && data.prn != '' &&
+        data.email == profile.email.lower() && data.googleEmail == (profile.get('googleEmail','') == null ? '' : profile.get('googleEmail','').lower()) &&
+        data.dept == profile.get('dept','') && data.sem == profile.get('sem','') && data.allowChatting is bool &&
+        data.allowChatting == (profile.get('allowChatting',true) != false) &&
+        (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 4096)) &&
+        data.photoURL == (profile.get('photoURL',null) in [null,''] ? null : profile.photoURL) &&
+        data.roll is string && data.roll.size() <= 128 && data.username is string && data.username.size() <= 128 &&
+        (data.updatedAt is string || data.updatedAt is timestamp) &&
+        (isAdmin() || (isOwner(userId) && matchesEnrollmentProvider(profile)));
+    }
+    match /student_directory/{userId} {
+      allow read: if isStudent() || isFaculty() || isAdmin();
+      allow create, update: if isSignedIn() && validDirectoryProjection(userId,request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    function isEnrolledChatPeer(uid) {
+      let peer = get(/databases/$(database)/documents/users/$(uid)).data;
+      return peer.get('role', '') in ['student', 'Student'] && peer.get('prn', '') != '' && peer.get('allowChatting', true) != false;
+    }
+
+    match /student_follows/{followId} {
+      allow read: if canUseChat();
+      allow create, update: if canUseChat() && request.resource.data.keys().hasOnly(['fromUid', 'toUid', 'createdAt']) &&
+        request.resource.data.fromUid == request.auth.uid && request.resource.data.toUid != request.auth.uid &&
+        followId == request.auth.uid + '__' + request.resource.data.toUid && isEnrolledChatPeer(request.resource.data.toUid);
+      allow delete: if canUseChat() && resource.data.fromUid == request.auth.uid;
+    }
+    match /student_friendships/{friendshipId} {
+      allow get: if canUseChat() && !exists(/databases/$(database)/documents/student_friendships/$(friendshipId));
+      allow read: if canUseChat() && request.auth.uid in resource.data.members;
+      allow create: if canUseChat() && request.resource.data.keys().hasOnly(['members', 'requesterUid', 'status', 'createdAt']) &&
+        request.resource.data.members.size() == 2 && request.auth.uid in request.resource.data.members &&
+        request.resource.data.requesterUid == request.auth.uid && request.resource.data.status == 'pending' &&
+        request.resource.data.members[0] != request.resource.data.members[1] &&
+        friendshipId == request.resource.data.members[0] + '__' + request.resource.data.members[1] &&
+        isEnrolledChatPeer(request.resource.data.members[0]) && isEnrolledChatPeer(request.resource.data.members[1]);
+      allow update: if canUseChat() && request.auth.uid in resource.data.members && request.auth.uid != resource.data.requesterUid &&
+        resource.data.status == 'pending' && request.resource.data.status == 'accepted' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedAt']);
+      allow delete: if canUseChat() && request.auth.uid in resource.data.members;
+    }
+
+    // =========================================================================
+    // 11. STUDENT 24-HOUR STORIES
+    // Path: /student_stories/{storyId}
+    // =========================================================================
+    match /student_stories/{storyId} {
+      allow read: if canUseChat() || isAdmin();
+      allow create: if canUseChat() && request.resource.data.authorUid == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['authorUid', 'authorName', 'authorAvatar', 'mediaUrl', 'caption', 'type', 'createdAt', 'expiresAt']) &&
+        request.resource.data.mediaUrl is string && request.resource.data.mediaUrl.size() > 0 &&
+        request.resource.data.createdAt is number && request.resource.data.createdAt <= request.time.toMillis() + 60000 &&
+        request.resource.data.createdAt >= request.time.toMillis() - 300000 &&
+        request.resource.data.expiresAt == request.resource.data.createdAt + 86400000;
+      allow update: if isAdmin() || (canUseChat() && resource.data.authorUid == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['caption', 'mediaUrl', 'type']));
+      allow delete: if isAdmin() || (canUseChat() && resource.data.authorUid == request.auth.uid);
+    }
+
+    // =========================================================================
+    // 12. STUDENT SOCIAL POSTS & ARTIFACTS
+    // Path: /student_posts/{postId}
+    // =========================================================================
+    function ownPostLike(before, after) {
+      return after.diff(before).affectedKeys().hasOnly(['likes']) && after.likes is list &&
+        after.likes.size() == after.likes.toSet().size() &&
+        (after.likes.toSet() == before.get('likes', []).toSet().union([request.auth.uid].toSet()) ||
+         after.likes.toSet() == before.get('likes', []).toSet().difference([request.auth.uid].toSet()));
+    }
+    function validOwnComment(comment) {
+      return comment.keys().hasOnly(['id', 'authorUid', 'authorName', 'authorAvatar', 'authorPrn', 'text', 'createdAt']) &&
+        comment.authorUid == request.auth.uid && comment.id is string && comment.id.size() > 0 &&
+        comment.text is string && comment.text.size() > 0 && comment.text.size() <= 2000 &&
+        comment.createdAt is number && comment.createdAt <= request.time.toMillis() + 60000 &&
+        comment.createdAt >= request.time.toMillis() - 300000;
+    }
+    function ownPostComment(before, after) {
+      return after.diff(before).affectedKeys().hasOnly(['comments']) && after.comments is list &&
+        after.comments.size() == before.get('comments', []).size() + 1 &&
+        after.comments.hasAll(before.get('comments', [])) &&
+        validOwnComment(after.comments[after.comments.size() - 1]);
+    }
+    match /student_posts/{postId} {
+      allow read: if canUseChat() || isAdmin();
+      allow create: if canUseChat() && request.resource.data.authorUid == request.auth.uid &&
+        request.resource.data.keys().hasOnly(['authorUid', 'authorName', 'authorAvatar', 'authorPrn', 'title', 'category', 'mediaUrl', 'caption', 'tags', 'mediaType', 'likes', 'comments', 'createdAt']) &&
+        request.resource.data.mediaUrl is string && request.resource.data.mediaUrl.size() > 0 &&
+        request.resource.data.get('likes', []) == [] && request.resource.data.get('comments', []) == [] &&
+        request.resource.data.createdAt is number && request.resource.data.createdAt <= request.time.toMillis() + 60000 &&
+        request.resource.data.createdAt >= request.time.toMillis() - 300000;
+      allow update: if isAdmin() || (canUseChat() && (
+        (resource.data.authorUid == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'category', 'mediaUrl', 'caption', 'tags'])) ||
+        ownPostLike(resource.data, request.resource.data) || ownPostComment(resource.data, request.resource.data)
+      ));
+      allow delete: if isAdmin() || (canUseChat() && resource.data.authorUid == request.auth.uid);
+    }
+
+    // Default deny-all fallback for any unspecified collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,104 @@
+import {createMediaApiTransport,createConfiguredMediaTransport} from './src/services/mediaApiTransport.js';
+import {auth} from './src/firebase.js';
+import {CloudStorageService} from './src/services/cloudStorageService.js';
+import {onAuthStateChanged} from 'firebase/auth';
+
+if(!import.meta.env.DEV||!['localhost','127.0.0.1'].includes(location.hostname))throw new Error('Local media gateway checks only.');
+const base='http://127.0.0.1:8787',gatewayBase=new URLSearchParams(location.search).get('worker')==='1'?'http://127.0.0.1:8789':base,upload={destination:'profile',contentType:'image/png',size:68};
+const rpc=async(token,body=upload,path='/upload')=>fetch(`${gatewayBase}/api/media${path}`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});
+const fixture=path=>fetch(`${base}/fixtures${path}`);
+document.getElementById('run').onclick=async event=>{
+ const button=event.currentTarget;button.disabled=true;const results=document.getElementById('results');results.replaceChildren();let passed=0,failed=0;
+ const check=async(label,operation)=>{let valid=false,detail='';try{valid=await operation()===true;}catch(error){detail=error.message;}valid?passed++:failed++;const row=document.createElement('li');row.textContent=`${valid?'PASS':'FAIL'} — ${label}${detail?` (${detail})`:''}`;results.append(row);document.getElementById('summary').textContent=`${passed} passed · ${failed} failed`;};
+ try{
+  const {tokens,projectId}=await(await fixture('')).json();
+  await check('Local gateway fixtures use a separate demo issuer and no production storage configuration',async()=>projectId==='demo-erp-media-api');
+  await check('An unapproved browser origin cannot use a valid account token to mint grants',()=>new Promise(resolve=>{const frame=document.createElement('iframe');frame.hidden=true;let timer;const receive=event=>{if(event.source!==frame.contentWindow||event.origin!==base||event.data?.kind!=='media-origin-probe')return;clearTimeout(timer);window.removeEventListener('message',receive);frame.remove();resolve(event.data.status===403);};window.addEventListener('message',receive);timer=setTimeout(()=>{window.removeEventListener('message',receive);frame.remove();resolve(false);},5000);frame.src=`${base}/fixtures/origin-probe${gatewayBase!==base?'?worker=1':''}`;document.body.append(frame);}));
+  await check('Missing authentication cannot mint an upload grant',async()=>(await rpc(null)).status===401);
+  for(const key of ['expired','wrongProject','wrongIssuer'])await check(`A signed ${key} token is rejected before storage access`,async()=>(await rpc(tokens[key])).status===401);
+  await check('A forged unsigned bearer value cannot bypass signature verification',async()=>(await rpc('not-a-firebase-token')).status===401);
+  for(const key of ['unknown','wrongAdmin','wrongInstitutionalProvider','unverifiedAdmin','wrongProvider','unverified','badUid'])await check(`The ${key} account cannot claim an enrolled upload identity`,async()=>(await rpc(tokens[key])).status===403);
+  await check('An actually enrolled verified Google student retains upload access',async()=>(await rpc(tokens.googleStudent)).status===200);
+  await check('An enrolled student cannot upload into another user identity',async()=>(await rpc(tokens.student,{...upload,uid:'student-b'})).status===403);
+  await check('Client-supplied object keys are rejected; only the server allocates object paths',async()=>(await rpc(tokens.student,{...upload,key:'users/student-b/overwrite.png'})).status===400);
+  await check('Unsupported executable content cannot receive an image upload policy',async()=>(await rpc(tokens.student,{...upload,contentType:'text/html'})).status===400);
+  await check('Oversized and empty profile images are rejected before signing',async()=>(await rpc(tokens.student,{...upload,size:10*1024*1024+1})).status===400&&(await rpc(tokens.student,{...upload,size:0})).status===400);
+  await check('Oversized API bodies are rejected with a controlled response',async()=>(await rpc(tokens.student,{...upload,padding:'x'.repeat(5000)})).status===413);
+  for(const key of ['faculty','googleAdmin','passwordAdmin'])await check(`${key} can manage their own profile images`,async()=>(await rpc(tokens[key])).status===200);
+  for(const key of ['faculty','googleAdmin','blocked'])await check(`${key} cannot mint student artifact grants`,async()=>(await rpc(tokens[key],{...upload,destination:'artifact'})).status===403);
+  await check('A blocked student retains their independent own-profile image permission',async()=>(await rpc(tokens.blocked)).status===200);
+  await check('A joined student can obtain a direct-message upload grant scoped to their UID',async()=>{const response=await rpc(tokens.student,{...upload,destination:'chat',chatId:'joined-dm'});return response.ok&&(await response.json()).key.startsWith('chats/joined-dm/student-a/');});
+  await check('A joined channel member can obtain a channel upload grant',async()=>(await rpc(tokens.student,{...upload,destination:'chat',chatId:'joined-channel'})).status===200);
+  await check('An enrolled legacy channel creator retains their authorized media upload access',async()=>(await rpc(tokens.student,{...upload,destination:'chat',chatId:'legacy-owned-channel'})).status===200);
+  for(const chatId of ['foreign-dm','foreign-channel','banned-channel'])await check(`Membership restrictions reject ${chatId} media uploads`,async()=>(await rpc(tokens.student,{...upload,destination:'chat',chatId})).status===403);
+  await check('Path traversal cannot be used as a chat destination',async()=>(await rpc(tokens.student,{...upload,destination:'chat',chatId:'../private'})).status===400);
+  const grant=await(await rpc(tokens.student)).json(),policy=JSON.parse(atob(grant.fields.Policy));
+  await check('The actual storage SDK signs a short-lived exact-size, MIME-bound POST policy',async()=>grant.key.startsWith('users/student-a/')&&grant.fields.key===grant.key&&grant.expiresIn===60&&Date.parse(policy.expiration)>Date.now()&&Date.parse(policy.expiration)<=Date.now()+65000&&policy.conditions.some(value=>Array.isArray(value)&&value[0]==='content-length-range'&&value[1]===68&&value[2]===68)&&policy.conditions.some(value=>Array.isArray(value)&&value[0]==='eq'&&value[1]==='$Content-Type'&&value[2]==='image/png'));
+  await check('Upload responses contain no reusable server signing secret',async()=>!JSON.stringify(grant).includes('LOCAL-ONLY-DUMMY-SIGNING-SECRET'));
+  const image=new Blob([Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGskAAAAASUVORK5CYII='),char=>char.charCodeAt(0))],{type:'image/png'});
+  const transport=createMediaApiTransport({baseUrl:`${gatewayBase}/api/media`,currentUser:()=>({uid:'student-a',getIdToken:async()=>tokens.student}),uploadOrigins:[base]});
+  let saved;
+  await check('The actual browser transport uploads through HTTP and returns acknowledged object metadata',async()=>{saved=await transport.upload({file:image});return saved.key.startsWith('users/student-a/')&&saved.fileSize===image.size;});
+  await check('Listing follows pagination and excludes every foreign-prefix object',async()=>{const rows=await transport.list(),state=await(await fixture('/state')).json();return rows.some(item=>item.Key===saved.key)&&rows.every(item=>item.Key.startsWith('users/student-a/'))&&state.pages>=2;});
+  await fixture('/fail-upload');
+  await check('A failed remote upload cannot acknowledge saved media',async()=>{try{await transport.upload({file:image});return false;}catch{return true;}});
+  await fixture('/false-ack');
+  await check('A generic proxy success response cannot masquerade as a confirmed object-store upload',async()=>{try{await transport.upload({file:image});return false;}catch{return true;}});
+  await fixture('/fail-list');
+  await check('A failed paginated listing remains an observable error',async()=>{try{await transport.list();return false;}catch{return true;}});
+  await fixture('/fail-remove');
+  await check('A rejected remote removal does not acknowledge deletion or lose the fixture object',async()=>{try{await transport.remove(saved.key);return false;}catch{const state=await(await fixture('/state')).json();return state.keys.includes(saved.key);}});
+  await check('Foreign and traversing object keys cannot be removed',async()=>(await rpc(tokens.student,{key:'users/student-b/private.png'},'/profile/remove')).status===403&&(await rpc(tokens.student,{key:'users/student-a/../private.png'},'/profile/remove')).status===403);
+  await check('Only an acknowledged owned fixture deletion returns success',async()=>{await transport.remove(saved.key);return !(await(await fixture('/state')).json()).keys.includes(saved.key);});
+  const sendGrant=async changes=>{const form=new FormData();for(const [key,value]of Object.entries({...grant.fields,...changes}))form.append(key,value);form.append('file',image);return fetch(grant.url,{method:'POST',body:form});};
+  await check('The object store rejects tampering with the signed content type',async()=>(await sendGrant({'Content-Type':'text/html'})).status===403);
+  await check('The object store rejects tampering with the signed destination',async()=>(await sendGrant({key:'users/student-b/overwrite.png'})).status===403);
+  await check('The object store rejects a changed signed policy',async()=>(await sendGrant({Policy:btoa(JSON.stringify({...policy,expiration:new Date(Date.now()+3600000).toISOString()}))})).status===403);
+  await check('The object store rejects bytes exceeding the signed exact file size',async()=>{const form=new FormData();for(const [key,value]of Object.entries(grant.fields))form.append(key,value);form.append('file',new Blob([image,new Uint8Array([0])],{type:'image/png'}));return(await fetch(grant.url,{method:'POST',body:form})).status===403;});
+  await check('Per-account rate limits stop repeated media grant requests',async()=>{let last;for(let index=0;index<31;index++)last=await rpc(tokens.rate);return last.status===429;});
+  await check('The server limits the total bytes reserved by repeated upload grants',async()=>{let last;for(let index=0;index<6;index++)last=await rpc(tokens.quota,{...upload,destination:'artifact',size:20*1024*1024});return last.status===429;});
+  await check('An expired token refreshes once for the same account through the real HTTP gateway',async()=>{const refreshes=[];const retry=createMediaApiTransport({baseUrl:`${gatewayBase}/api/media`,currentUser:()=>({uid:'student-b',getIdToken:async force=>{refreshes.push(force);return force?tokens.other:tokens.expired;}})});return Array.isArray(await retry.list())&&JSON.stringify(refreshes)==='[false,true]';});
+  const serviceUid='student-b',cacheKey=`krc_cloud_photos_${serviceUid}`,cacheBefore=localStorage.getItem(cacheKey);
+  const serviceTransport={...createMediaApiTransport({baseUrl:`${gatewayBase}/api/media`,currentUser:()=>({uid:serviceUid,getIdToken:async()=>tokens.other}),uploadOrigins:[base]}),publicUrl:key=>`${base}/fixture-public/${key}`};
+  const service=new CloudStorageService(serviceTransport,()=>serviceUid);
+  try{
+   let photo;
+   await check('The ERP photo service preserves the authoritative server key and caches only acknowledged metadata',async()=>{photo=await service.uploadUserProfilePhoto(serviceUid,image);return photo.key.startsWith(`users/${serviceUid}/`)&&photo.publicUrl===`${base}/fixture-public/${photo.key}`&&service.getCachedUserPhotos(serviceUid).some(row=>row.key===photo.key);});
+   await check('The ERP artifact service selects the actual student artifact namespace',async()=>{const artifact=await service.uploadStudentArtifact(serviceUid,image);return artifact.key.startsWith(`artifacts/${serviceUid}/`)&&artifact.authorUid===serviceUid;});
+   await check('The ERP chat photo service binds the server-allocated conversation and sender namespace',async()=>{const chat=await service.uploadChatPhoto('joined-dm',serviceUid,image);return chat.key.startsWith(`chats/joined-dm/${serviceUid}/`)&&chat.senderId===serviceUid;});
+   await check('The ERP photo library lists the actual server-generated object instead of an invented filename',async()=>(await service.listUserProfilePhotos(serviceUid)).some(row=>row.key===photo.key&&row.url===photo.publicUrl));
+   await check('The ERP photo service removes only its disposable fixture after server acknowledgment',async()=>{await service.deleteUserProfilePhoto(serviceUid,photo.key);return !service.getCachedUserPhotos(serviceUid).some(row=>row.key===photo.key)&&!(await(await fixture('/state')).json()).keys.includes(photo.key);});
+   await check('The ERP photo service rejects foreign metadata returned by a transport',async()=>{const invalid=new CloudStorageService({upload:async()=>({key:'users/another-person/photo.png',publicUrl:'/foreign.png'})},()=>serviceUid);try{await invalid.uploadUserProfilePhoto(serviceUid,image);return false;}catch{return true;}});
+   await check('The ERP photo service prevents legacy late uploads from caching in a changed session',async()=>{let current=serviceUid;const before=localStorage.getItem(cacheKey);const changing=new CloudStorageService({upload:async()=>{current='another-person';},publicUrl:key=>`/fixture/${key}`},()=>current);try{await changing.uploadUserProfilePhoto(serviceUid,image);return false;}catch{return localStorage.getItem(cacheKey)===before;}});
+  }finally{if(cacheBefore===null)localStorage.removeItem(cacheKey);else localStorage.setItem(cacheKey,cacheBefore);}
+  const other={uid:'student-b',getIdToken:async()=>tokens.other};
+  const empty=()=>new Response(JSON.stringify({objects:[]}),{status:200,headers:{'Content-Type':'application/json'}});
+  await check('Changing accounts during token refresh stops the request before transmission',async()=>{let user,calls=0;user={uid:'student-a',getIdToken:async()=>{user=other;return tokens.student;}};const session=createMediaApiTransport({currentUser:()=>user,fetcher:async()=>{calls++;return empty();}});try{await session.list();return false;}catch{return calls===0;}});
+  await check('A 401 response cannot retry a previous account operation under the new account',async()=>{let user={uid:'student-a',getIdToken:async()=>tokens.student},calls=0;const session=createMediaApiTransport({currentUser:()=>user,fetcher:async()=>{calls++;user=other;return calls===1?new Response('{}',{status:401}):empty();}});try{await session.list();return false;}catch{return calls===1;}});
+  await check('A late media listing cannot populate a different signed-in account',async()=>{let user={uid:'student-a',getIdToken:async()=>tokens.student};const session=createMediaApiTransport({currentUser:()=>user,fetcher:async()=>{user=other;return empty();}});try{await session.list();return false;}catch{return true;}});
+  await check('An upload finishing after account change cannot acknowledge media in the new session',async()=>{let user={uid:'student-a',getIdToken:async()=>tokens.student},calls=0;const session=createMediaApiTransport({currentUser:()=>user,uploadOrigins:[base],fetcher:async()=>{if(++calls===1)return new Response(JSON.stringify(grant),{status:200});user=other;return new Response(null,{status:204});}});try{await session.upload({file:image});return false;}catch{return calls===2;}});
+  await check('A repeated unauthorized response stops after one token refresh',async()=>{let calls=0;const session=createMediaApiTransport({currentUser:()=>other,fetcher:async()=>{calls++;return new Response('{}',{status:401});}});try{await session.list();return false;}catch{return calls===2;}});
+  const legacy={list:async()=>{throw new Error('Legacy should never run for a configured gateway.');}},publicUrl=key=>`${base}/fixture-public/${key}`;
+  await check('Leaving the gateway address empty preserves the existing ERP transport',async()=>createConfiguredMediaTransport({gatewayUrl:' ',legacyTransport:legacy})===legacy);
+  await check('Configured Node transport reaches the real HTTP gateway without changing ERP callers',async()=>{const configured=createConfiguredMediaTransport({gatewayUrl:`${gatewayBase}/api/media/`,legacyTransport:legacy,publicUrl,currentUser:()=>other,uploadOrigins:[base],allowLocal:true});return Array.isArray(await configured.list())&&configured.publicUrl('users/student-b/photo.png')===publicUrl('users/student-b/photo.png');});
+  await check('Production gateway configuration rejects HTTP, embedded credentials and unexpected URL suffixes',async()=>{let sent=0;for(const gatewayUrl of ['http://media.example.test/api/media','https://user:password@media.example.test/api/media','https://media.example.test/api/media?token=bad','https://media.example.test/api/media#bad','https://media.example.test/not-the-api','not-a-url']){const configured=createConfiguredMediaTransport({gatewayUrl,legacyTransport:legacy,publicUrl,currentUser:()=>other,fetcher:async()=>{sent++;return empty();}});try{await configured.list();return false;}catch{}}return sent===0;});
+  await check('Loopback HTTP cannot be accidentally enabled by a production build',async()=>{let sent=0;const configured=createConfiguredMediaTransport({gatewayUrl:`${base}/api/media`,legacyTransport:legacy,publicUrl,currentUser:()=>other,fetcher:async()=>{sent++;return empty();}});try{await configured.list();return false;}catch{return sent===0;}});
+  await check('A configured HTTPS service uses the authenticated Node API path',async()=>{let path,authorization;const configured=createConfiguredMediaTransport({gatewayUrl:'https://media.example.test/api/media/',legacyTransport:legacy,publicUrl,currentUser:()=>other,fetcher:async(url,options)=>{path=url;authorization=options.headers.Authorization;return empty();}});return Array.isArray(await configured.list())&&path==='https://media.example.test/api/media/profile/list'&&authorization===`Bearer ${tokens.other}`;});
+  await check('Gateway errors never retry through reusable browser signing credentials',async()=>{let legacyCalls=0,requests=0;const configured=createConfiguredMediaTransport({gatewayUrl:'https://media.example.test/api/media',legacyTransport:{list:async()=>{legacyCalls++;return [];}},publicUrl,currentUser:()=>other,fetcher:async()=>{requests++;return new Response(JSON.stringify({error:'Gateway unavailable'}),{status:503});}});try{await configured.list();return false;}catch(error){return legacyCalls===0&&requests===1&&error.message==='Gateway unavailable';}});
+  const platform=async(token,body={},path='/identity')=>fetch(`${base}/firebase/api/media${path}`,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:typeof body==='string'?body:JSON.stringify(body)});
+  await check('Firebase’s actual HTTPS SDK accepts an already-consumed raw JSON body',async()=>{const response=await platform(tokens.other);const actor=await response.json();return response.status===200&&actor.uid==='student-b'&&actor.role==='student';});
+  await check('Firebase-wrapped upload grants retain server-allocated own-account paths',async()=>{const response=await platform(tokens.other,upload,'/upload');return response.status===200&&(await response.json()).key.startsWith('users/student-b/');});
+  await check('Firebase rawBody requests preserve the exact API body size bound',async()=>(await platform(tokens.other,{padding:'x'.repeat(5000)})).status===413);
+  await check('Malformed raw JSON cannot bypass Firebase gateway request validation',async()=>(await platform(tokens.other,'{bad-json')).status===400);
+  await check('The Firebase HTTPS wrapper does not bypass missing or forged authentication',async()=>(await platform(null)).status===401&&(await platform('not-a-token')).status===401);
+  let calls=0;
+  await check('A missing client session cannot transmit a media request',async()=>{const none=createMediaApiTransport({currentUser:()=>null,fetcher:()=>{calls++;}});try{await none.list();return false;}catch{return calls===0;}});
+ }catch(error){await check('Local gateway checks can initialize',async()=>{throw error;});}
+ finally{button.disabled=false;}
+};
+const liveButton=document.getElementById('live');liveButton.disabled=true;
+onAuthStateChanged(auth,user=>{liveButton.disabled=!user;});
+liveButton.onclick=async()=>{
+ liveButton.disabled=true;const result=document.getElementById('live-result');
+ try{const actor=await createMediaApiTransport({baseUrl:'http://127.0.0.1:8788/api/media'}).identity();result.textContent=actor.uid===auth.currentUser?.uid&&['student','faculty','admin'].includes(actor.role)?`PASS — The server verified the real Firebase signature, project and ${actor.role} enrollment. No storage operation performed.`:'FAIL — Server identity mismatch.';}catch(error){result.textContent=`FAIL — ${error.message}`;}finally{liveButton.disabled=!auth.currentUser;}
+};

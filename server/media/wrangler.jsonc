@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "krc-erp-media-gateway",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-18",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": true,
+  "send_metrics": false,
+  "vars": {
+    "FIREBASE_PROJECT_ID": "erp-system-mit",
+    "MEDIA_BUCKET": "krc-edu-bucket",
+    "MEDIA_REGION": "ap-south-1"
+  },
+  "observability": {
+    "enabled": false
+  },
+  "alias": {
+    "@aws-sdk/xml-builder": "./node_modules/@aws-sdk/xml-builder/dist-cjs/index.js"
+  }
+}

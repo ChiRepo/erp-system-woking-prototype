@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ERP media gateway browser checks</title></head><body>
+<h1>ERP media gateway browser checks</h1><p>Local HTTP integration with dummy signing credentials, a separate demo token issuer and disposable RAM-only images. No production uploads, deletions, account changes or messages.</p>
+<button id="run">Run local gateway checks</button><p id="summary">Not run</p><ol id="results"></ol>
+<h2>Live sign-in verification</h2><p>This optional check sends the current student token to the loopback gateway on port 8788. It verifies the real token and reads only your own enrollment. It performs no storage operations.</p><a href="/login">Sign in to local ERP first</a><button id="live">Verify current live sign-in (read-only)</button><p id="live-result">Not run</p>
+<script type="module" src="/tests-browser-media-api.js"></script></body></html>

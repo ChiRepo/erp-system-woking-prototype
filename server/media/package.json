@@ -1,0 +1,27 @@
+{
+  "name": "krc-media-gateway",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "fixtures": "node fixtures.js",
+    "worker:dev": "wrangler dev --config wrangler.jsonc",
+    "worker:fixtures": "wrangler dev --local --config wrangler.fixtures.jsonc",
+    "worker:check": "wrangler deploy --dry-run --config wrangler.jsonc",
+    "worker:deploy": "wrangler deploy --config wrangler.jsonc"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1142.0",
+    "@aws-sdk/s3-presigned-post": "3.1142.0",
+    "@smithy/fetch-http-handler": "5.8.0",
+    "firebase-functions": "7.4.0",
+    "jose": "^6.1.0"
+  },
+  "main": "firebase.js",
+  "devDependencies": {
+    "wrangler": "4.151.1"
+  }
+}

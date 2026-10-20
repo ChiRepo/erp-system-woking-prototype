@@ -1,0 +1,395 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #FFFFFF;
+    --surface: #FFFFFF;
+    --text: #111111;
+    --muted: #6B7280;
+    --border: #E5E7EB;
+  }
+  .dark {
+    --bg: #0F0F10;
+    --surface: #18181B;
+    --text: #F4F4F5;
+    --muted: #A1A1AA;
+    --border: #27272A;
+  }
+  body {
+    @apply bg-bg text-text antialiased font-sans;
+    -webkit-tap-highlight-color: transparent;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  
+  html {
+    scroll-behavior: auto;
+    text-size-adjust: 100%;
+    -webkit-text-size-adjust: 100%;
+  }
+}
+
+/* Safe area inset utilities for mobile devices with notches / home indicators */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
+/* Smooth momentum scrolling for responsive mobile tables */
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Smooth, glitch-free interactive transitions */
+.btn-interactive {
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+}
+
+/* Ultra-Fluid, Instant-Mount Page Transition (No JS delay, No opacity flash) */
+@keyframes page-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-enter {
+  animation: page-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: opacity, transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Subtle dark-mode border enhancement so dark buttons don't fade into dark backgrounds */
+.dark .btn-dark-border,
+.dark button.border,
+.dark a.border {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.dark .btn-dark-border:hover,
+.dark button.border:hover,
+.dark a.border:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Nothing Phone UI Circular View Transition - ultra-fluid, 60fps compositor-accelerated */
+::view-transition-group(root) {
+  animation-duration: 0.32s;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+  display: block;
+  height: 100%;
+  will-change: clip-path;
+  transform: translateZ(0);
+}
+
+::view-transition-old(root) {
+  z-index: 1;
+}
+
+::view-transition-new(root) {
+  z-index: 99999;
+  animation: theme-reveal 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes theme-reveal {
+  from {
+    clip-path: circle(0px at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+  to {
+    clip-path: circle(var(--theme-radius, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* Custom scrollbar for clean dashboard feel */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Futuristic Scanning Laser Line Keyframe */
+@keyframes laser-scan {
+  0% {
+    top: 6%;
+    opacity: 0.3;
+  }
+  50% {
+    top: 92%;
+    opacity: 1;
+  }
+  100% {
+    top: 6%;
+    opacity: 0.3;
+  }
+}
+
+.animate-laser-scan {
+  animation: laser-scan 2.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Html5Qrcode Sleek Futuristic Styling */
+#qr-reader {
+  border: none !important;
+  background: #000 !important;
+  width: 100% !important;
+  height: 100% !important;
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+}
+
+#qr-reader video,
+#qr-reader__scan_region video {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 1rem;
+  transform-origin: center center !important;
+  will-change: transform;
+}
+
+#qr-reader__scan_region {
+  background: transparent !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+}
+
+#qr-shaded-region {
+  display: none !important;
+}
+
+#qr-reader__dashboard {
+  display: none !important;
+}
+
+#qr-reader img[alt="Info icon"],
+#qr-reader__header_message,
+#qr-reader__camera_selection {
+  display: none !important;
+}
+
+/* ==========================================================================
+   Bootstrap 5 Spinners & Animations (Border & Grow Types)
+   ========================================================================== */
+@keyframes spinner-border {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes spinner-grow {
+  0% {
+    transform: scale(0);
+  }
+  50% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.spinner-border {
+  display: inline-block;
+  width: 2rem;
+  height: 2rem;
+  vertical-align: -0.125em;
+  border: 0.25em solid currentColor;
+  border-right-color: transparent !important;
+  border-radius: 50%;
+  animation: 0.75s linear infinite spinner-border;
+}
+
+.spinner-border-sm {
+  width: 1rem;
+  height: 1rem;
+  border-width: 0.2em;
+}
+
+.spinner-grow {
+  display: inline-block;
+  width: 2rem;
+  height: 2rem;
+  vertical-align: -0.125em;
+  background-color: currentColor;
+  border-radius: 50%;
+  opacity: 0;
+  animation: 0.75s linear infinite spinner-grow;
+}
+
+.spinner-grow-sm {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Bootstrap Color Variants */
+.spinner-border.text-primary, .spinner-grow.text-primary { color: #10B981 !important; }
+.spinner-border.text-secondary, .spinner-grow.text-secondary { color: #6B7280 !important; }
+.spinner-border.text-success, .spinner-grow.text-success { color: #10B981 !important; }
+.spinner-border.text-danger, .spinner-grow.text-danger { color: #EF4444 !important; }
+.spinner-border.text-warning, .spinner-grow.text-warning { color: #F59E0B !important; }
+.spinner-border.text-info, .spinner-grow.text-info { color: #3B82F6 !important; }
+.spinner-border.text-light, .spinner-grow.text-light { color: #F4F4F5 !important; }
+.spinner-border.text-dark, .spinner-grow.text-dark { color: #111111 !important; }
+
+/* Accessible screen-reader utility */
+.visually-hidden,
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* Living Trailing Wake Effect for Stiff Live Bar */
+@keyframes living-wake {
+  0% {
+    opacity: 0.88;
+    filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.4));
+  }
+  50% {
+    opacity: 0.68;
+    filter: drop-shadow(0 0 20px rgba(56, 189, 248, 0.6));
+  }
+  100% {
+    opacity: 0.88;
+    filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.4));
+  }
+}
+
+.animate-living-wake {
+  animation: living-wake 2.8s ease-in-out infinite;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Campus Live Events Marquee Ticker & Orbital Spin */
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 35s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 24s linear infinite;
+}
+
+/* High-Contrast Leaflet Map Controls for Accessible Visibility */
+.leaflet-bar {
+  border: 1px solid #d1d5db !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.15) !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+}
+
+.leaflet-bar a {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+  font-weight: 800 !important;
+  border-bottom: 1px solid #e5e7eb !important;
+  width: 32px !important;
+  height: 32px !important;
+  line-height: 32px !important;
+  transition: background-color 150ms ease, color 150ms ease !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: #f3f4f6 !important;
+  color: #000000 !important;
+}
+
+.leaflet-container .leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #374151 !important;
+  font-size: 10px !important;
+  padding: 2px 6px !important;
+  border-radius: 4px 0 0 0 !important;
+}
+
+/* Leaflet Popup & Custom Pin Accessible High-Contrast Styling */
+.leaflet-popup-content-wrapper {
+  background: #ffffff !important;
+  color: #09090b !important;
+  border: 1px solid #d4d4d8 !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.25) !important;
+  border-radius: 14px !important;
+}
+
+.leaflet-popup-tip {
+  background: #ffffff !important;
+}
+
+.leaflet-popup-content {
+  margin: 12px 14px !important;
+  line-height: 1.4 !important;
+  color: #09090b !important;
+}
+
+.leaflet-container {
+  font-family: inherit !important;
+}
+
+.custom-venue-pin {
+  background: transparent !important;
+  border: none !important;
+}

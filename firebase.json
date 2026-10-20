@@ -1,0 +1,110 @@
+{
+  "hosting": {
+    "site": "erp-system-mit",
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "**/*.map",
+      "**/*.md",
+      "*.md",
+      "**/*.log",
+      "**/*.csv",
+      ".env*",
+      "**/.env*",
+      "**/*.key",
+      "**/*.pem",
+      "**/*.cert",
+      "**/*.crt",
+      "**/*.secret",
+      "**/credentials.json",
+      "**/serviceAccountKey*.json",
+      "graphify-out/**",
+      ".agents/**",
+      "security*.md",
+      "social*.md",
+      "**/scratch/**",
+      "**/.git/**",
+      "**/*.sh",
+      "**/*.mjs",
+      "**/*.cjs",
+      "**/*.py",
+      ".gsd/**",
+      ".agent/**",
+      "PROJECT_RULES.md",
+      "GSD-STYLE.md",
+      "design_showcase/**"
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "X-Frame-Options",
+            "value": "SAMEORIGIN"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          },
+          {
+            "key": "Permissions-Policy",
+            "value": "camera=(self), microphone=(), geolocation=(self)"
+          },
+          {
+            "key": "Strict-Transport-Security",
+            "value": "max-age=31536000; includeSubDomains; preload"
+          },
+          {
+            "key": "X-XSS-Protection",
+            "value": "1; mode=block"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          },
+          {
+            "key": "Pragma",
+            "value": "no-cache"
+          },
+          {
+            "key": "Expires",
+            "value": "0"
+          }
+        ]
+      },
+      {
+        "source": "/assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "/images/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=86400"
+          }
+        ]
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

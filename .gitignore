@@ -1,0 +1,62 @@
+# =============================================================================
+# KRC ERP - Git Ignore Rules
+# =============================================================================
+
+# Environment & Secrets
+.env
+.env.local
+.env.production
+.env.*.local
+
+# AWS Credentials & Secrets
+s3/s3-webapp-user_accessKeys.csv
+s3/*.csv
+s3/
+*.pem
+*.key
+*.secret
+*.bak
+*.backup
+
+# Audit Reports & Outputs
+claude outpue/
+Claude outputs/
+report.md
+security-audit-toolkit/
+
+# Dependencies
+node_modules/
+
+# Build Output
+dist/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Graphify Output (optional - can be regenerated)
+# graphify-out/
+
+# Firebase
+.firebase/
+.firebaserc
+
+# Local verification, recordings and provider runtime state
+artifacts/
+recordings/
+.gravitas/
+.wrangler/
+.dev.vars
+.dev.vars.*
+*accessKeys*.csv
+handoff-history.md
+graphify-out/
